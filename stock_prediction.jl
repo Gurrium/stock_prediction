@@ -1,0 +1,162 @@
+using TensorFlow, Distributions
+using DataFrames, CSV
+using Plots;pyplot()
+
+const path = joinpath("./8-7", ARGS[1], ARGS[2])
+const length_of_sequence = parse(Int64, ARGS[2]) # 食わせたいデータの数
+const num_of_hidden_nodes = parse(Int64, ARGS[1])
+const num_of_inputs = 1 # インプットの種類(今回だと終値だけなので1)
+const num_of_outputs = 1 # アウトプットの種類(今回は出力される終値なので1)
+const display_step = 100
+predicts = []
+
+function batch_data(raw_data::Array{Float64, 1})
+  const last_index = length(raw_data) - length_of_sequence
+
+  data, labels = [], []
+
+  for i in 1:last_index
+    push!(data, raw_data[i:(length_of_sequence + (i - 1))])
+    push!(labels, raw_data[length_of_sequence + i])
+  end
+
+  data = [cat(2, r) for r in data]
+  labels = [cat(2, r) for r in labels]
+
+  return data, labels
+end
+
+function get_data(file_name, column_name, ratio=0.8)
+  raw_data = CSV.read(file_name)[Symbol(column_name)]
+  raw_data = [get(r) for r in collect(raw_data)]
+
+  divide_index = Int(round(length(raw_data) * ratio))
+  train_data, train_labels = batch_data(raw_data[1:divide_index])
+  test_data, test_labels = batch_data(raw_data[divide_index:end])
+
+  return train_data, train_labels, test_data, test_labels
+end
+
+function train(datum, labels)
+  kk = 0
+  preds = []
+  losses = []
+
+  for (data, label) in zip(datum, labels)
+    _, pred, loss = run(sess, [train_op, Y_pred, loss_op], Dict(X=>data, Y_obs=>label))
+    push!(preds, pred)
+    push!(losses, loss)
+
+    kk += 1
+    if kk % display_step == 1
+      train_loss, train_pred = run(sess, [loss_op, Y_pred], Dict(X=>data, Y_obs=>label) )
+      info("n: $(kk)\nloss: $(train_loss)\nprediction: $(train_pred)\n")
+    end
+
+    summaries = run(sess, summary_op, Dict(X=>data, Y_obs=>label))
+    write(summary_writer, summaries, kk)
+  end
+
+  train_labels_ = [r[1] for r in labels]
+  preds_ = [r[1] for r in preds]
+
+  score = []
+  for (p, l) in zip(preds_, train_labels_)
+    if p > l * 0.95 && p < l * 1.05
+      push!(score, 1)
+    else
+      push!(score, 0)
+    end
+  end
+  info("mean_accuracy: $(mean(score))")
+
+  plot(1:length(preds), [preds_, train_labels_], label = ["prediction" "label"])
+  savefig(joinpath(path, "train_pred_label.png"))
+
+  losses_ = [r[1] for r in losses]
+  plot(1:length(losses), [losses], label = ["loss"])
+  savefig(joinpath(path, "train_loss.png"))
+
+  plot(1:length(preds), [preds_, train_labels_, losses_], label = ["prediction" "label" "losses"])
+  savefig(joinpath(path, "train.png"))
+end
+
+function test(datum, labels)
+  kk = 0
+  preds = []
+  losses = []
+
+  for (data, label) in zip(datum, labels)
+    kk += 1
+    if kk % display_step == 1
+      test_loss, test_pred = run(sess, [loss_op, Y_pred], Dict(X=>data, Y_obs=>label) )
+      info("n: $(kk)\nloss: $(test_loss)\nprediction: $(test_pred)\n")
+    end
+
+    _, summaries, pred, loss = run(sess, [train_op, summary_op, Y_pred, loss_op], Dict(X=>data, Y_obs=>label))
+    push!(preds, pred)
+    push!(losses, loss)
+
+    write(summary_writer, summaries, kk)
+  end
+
+  test_labels_ = [r[1] for r in labels]
+  preds_ = [r[1] for r in preds]
+
+  score = []
+  for (p, l) in zip(preds_, test_labels_)
+    if p > l * 0.95 && p < l * 1.05
+      push!(score, 1)
+    else
+      push!(score, 0)
+    end
+  end
+  info("mean_accuracy: $(mean(score))")
+
+  plot(1:length(preds), [preds_, test_labels_], label = ["prediction" "label"])
+  savefig(joinpath(path, "test_pred_label.png"))
+
+  losses_ = [r[1] for r in losses]
+  plot(1:length(losses), [losses], label = ["loss"])
+  savefig(joinpath(path, "test_loss.png"))
+
+  plot(1:length(preds), [preds_, test_labels_, losses_], label = ["prediction" "label" "losses"])
+  savefig(joinpath(path, "test.png"))
+end
+
+sess = Session(Graph())
+
+# テンソル定義
+# LSTMに入れるべきテンソルのランクがわからない ← 一回の入力×食わせたいデータの個数(隠れ層の個数? 隠れ層は各セルに存在する?)
+X = placeholder(shape=[length_of_sequence, num_of_inputs], Float64, name="X")
+x = split(1, length_of_sequence, X)
+
+cell = nn.rnn_cell.LSTMCell(num_of_hidden_nodes)
+output, state = nn.rnn(cell, x, dtype=Float32) # dtype: 出力の型
+
+# 最初から何かしらの値を入れておくと収束が早いかも?
+variable_scope("model", initializer=Normal(0, 0.5)) do
+  global W = get_variable("weights", [num_of_hidden_nodes, num_of_inputs], Float64)
+  global b = get_variable("bias", [num_of_outputs], Float64)
+end
+
+Y_pred = output[end] * W + b
+Y_obs = placeholder(shape=[num_of_inputs, num_of_outputs], Float64, name="Y_obs")
+
+W_hist = TensorFlow.summary.histogram("W_hist", W)
+b_hist = TensorFlow.summary.histogram("b_hist", b)
+Y_pred_hist = TensorFlow.summary.histogram("Y_pred", Y_pred)
+
+loss_op = reduce_mean((Y_pred - Y_obs)^2)
+loss_op_hist = TensorFlow.summary.scalar("loss", loss_op)
+
+train_op = train.minimize(train.GradientDescentOptimizer(), loss_op)
+
+summary_op = TensorFlow.summary.merge_all()
+summary_writer = TensorFlow.summary.FileWriter(path)
+
+run(sess, global_variables_initializer())
+
+train_data, train_labels, test_data, test_labels = get_data("./n225.csv", "close")
+train(train_data, train_labels)
+test(test_data, test_labels)
