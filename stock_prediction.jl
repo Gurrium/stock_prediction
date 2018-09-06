@@ -2,7 +2,7 @@ using TensorFlow, Distributions
 using DataFrames, CSV
 using Plots;pyplot()
 
-const path = joinpath("./8-7", ARGS[1], ARGS[2])
+const path = joinpath("./8-9", ARGS[1], ARGS[2])
 const length_of_sequence = parse(Int64, ARGS[2]) # 食わせたいデータの数
 const num_of_hidden_nodes = parse(Int64, ARGS[1])
 const num_of_inputs = 1 # インプットの種類(今回だと終値だけなので1)
@@ -37,7 +37,7 @@ function get_data(file_name, column_name, ratio=0.8)
   return train_data, train_labels, test_data, test_labels
 end
 
-function train(datum, labels)
+function l_train(datum, labels)
   kk = 0
   preds = []
   losses = []
@@ -62,13 +62,21 @@ function train(datum, labels)
 
   score = []
   for (p, l) in zip(preds_, train_labels_)
-    if p > l * 0.95 && p < l * 1.05
+    if p > l * 0.99 && p < l * 1.01
       push!(score, 1)
     else
       push!(score, 0)
     end
   end
   info("mean_accuracy: $(mean(score))")
+
+  # touch("./result.txt")
+  # open("./result.txt", "a") do fp
+  #   write(fp, "num_of_hidden_nodes: $(num_of_hidden_nodes)\n")
+  #   write(fp, "length_of_sequence: $(length_of_sequence)\n")
+  #   write(fp, "mean_accuracy: $(mean(score))\n")
+  #   write(fp, "\n")
+  # end
 
   plot(1:length(preds), [preds_, train_labels_], label = ["prediction" "label"])
   savefig(joinpath(path, "train_pred_label.png"))
@@ -81,7 +89,7 @@ function train(datum, labels)
   savefig(joinpath(path, "train.png"))
 end
 
-function test(datum, labels)
+function l_test(datum, labels)
   kk = 0
   preds = []
   losses = []
@@ -89,11 +97,12 @@ function test(datum, labels)
   for (data, label) in zip(datum, labels)
     kk += 1
     if kk % display_step == 1
-      test_loss, test_pred = run(sess, [loss_op, Y_pred], Dict(X=>data, Y_obs=>label) )
+      test_loss, test_pred = run(sess, [loss_op, Y_pred], Dict(X=>data, Y_obs=>label))
       info("n: $(kk)\nloss: $(test_loss)\nprediction: $(test_pred)\n")
     end
+    info("$(data)")
 
-    _, summaries, pred, loss = run(sess, [train_op, summary_op, Y_pred, loss_op], Dict(X=>data, Y_obs=>label))
+    summaries, pred, loss = run(sess, [summary_op, Y_pred, loss_op], Dict(X=>data, Y_obs=>label))
     push!(preds, pred)
     push!(losses, loss)
 
@@ -105,7 +114,7 @@ function test(datum, labels)
 
   score = []
   for (p, l) in zip(preds_, test_labels_)
-    if p > l * 0.95 && p < l * 1.05
+    if p > l * 0.99 && p < l * 1.01
       push!(score, 1)
     else
       push!(score, 0)
@@ -157,6 +166,6 @@ summary_writer = TensorFlow.summary.FileWriter(path)
 
 run(sess, global_variables_initializer())
 
-train_data, train_labels, test_data, test_labels = get_data("./n225.csv", "close")
-train(train_data, train_labels)
-test(test_data, test_labels)
+train_data, train_labels, test_data, test_labels = get_data("./n.csv", "close", 0.8)
+l_train(train_data, train_labels)
+l_test(test_data, test_labels)
